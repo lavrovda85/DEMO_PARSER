@@ -26,7 +26,7 @@ Docker-образ настроен для работы с:
 ClickHouse запускается в отдельном контейнере из официального образа:
 - **Образ:** `clickhouse/clickhouse-server:23.8-alpine`
 - **Порт:** 9000 (native protocol) и 8123 (HTTP)
-- **Автоматическая инициализация:** схема Data Vault создается из `docker/init-clickhouse.sql`
+- **Автоматическая инициализация:** схема Data Vault создается из `sql/init-clickhouse.sql`
 
 ## Конфигурация
 
@@ -64,7 +64,7 @@ services:
       - "9000:8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./docker/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
+      - ./sql/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'"]
       interval: 10s
@@ -148,7 +148,7 @@ docker-compose exec app python -c "from pyppeteer import launch; import asyncio;
 
 ## Инициализация ClickHouse схемы
 
-Схема Data Vault автоматически создается при первом запуске ClickHouse из файла `docker/init-clickhouse.sql`.
+Схема Data Vault автоматически создается при первом запуске ClickHouse из файла `sql/init-clickhouse.sql`.
 
 Если схема не создалась автоматически, можно инициализировать вручную:
 
@@ -157,7 +157,7 @@ docker-compose exec clickhouse clickhouse-client \
   --user places_user \
   --password places_password \
   --database places_db \
-  < docker/init-clickhouse.sql
+  < sql/init-clickhouse.sql
 ```
 
 ## Решение проблем

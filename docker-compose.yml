@@ -13,7 +13,7 @@ services:
       - "9000:8123"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./docker/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
+      - ./sql/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
     healthcheck:
        test: ["CMD-SHELL", "clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'"]
        interval: 10s

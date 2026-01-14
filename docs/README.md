@@ -304,7 +304,7 @@ docker-compose exec clickhouse clickhouse-client --user places_user --password p
 Если схема не инициализировалась автоматически:
 
 ```bash
-docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db < docker/init-clickhouse.sql
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db < sql/init-clickhouse.sql
 ```
 
 ## Лицензия
