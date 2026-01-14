@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: places_api_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-places_db}
+      POSTGRES_USER: ${POSTGRES_USER:-places_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-places_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-places_user} -d ${POSTGRES_DB:-places_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: places_api_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-places_db}
+      POSTGRES_USER: ${POSTGRES_USER:-places_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-places_password}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
+      SEARCH_REGION: ${SEARCH_REGION:-Byron Bay, NSW, Australia}
+      SEARCH_POSTAL_CODE: ${SEARCH_POSTAL_CODE:-2481}
+      SEARCH_CATEGORY: ${SEARCH_CATEGORY:-Women's Clothing Store}
+      # Настройки обогащения данных
+      ENRICHMENT_BROWSER_LIBRARY: ${ENRICHMENT_BROWSER_LIBRARY:-auto}
+      ENRICHMENT_HEADLESS: ${ENRICHMENT_HEADLESS:-true}
+      ENRICHMENT_TIMEOUT: ${ENRICHMENT_TIMEOUT:-30000}
+      # Настройки параллелизма pipeline
+      PIPELINE_MAX_CONCURRENT_ENRICHMENT: ${PIPELINE_MAX_CONCURRENT_ENRICHMENT:-5}
+      PIPELINE_MAX_CONCURRENT_DB_WRITES: ${PIPELINE_MAX_CONCURRENT_DB_WRITES:-10}
+      # Переменные для Chrome/Chromium
+      CHROME_BIN: /usr/bin/google-chrome-stable
+      CHROMIUM_BIN: /usr/bin/google-chrome-stable
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+    # Увеличиваем shared memory для Chrome (требуется для стабильной работы)
+    shm_size: '2gb'
+    command: python -m src.main
+
+volumes:
+  postgres_data:
+
