@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Установка системных зависимостей для Chrome/Chromium и браузерной автоматизации
+# Установка системных зависимостей для Puppeteer и ClickHouse
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -24,20 +24,16 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
-    curl \
-    unzip \
+    libxss1 \
+    libxtst6 \
+    libpangocairo-1.0-0 \
+    libcairo-gobject2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Установка Google Chrome
-# Используем официальный репозиторий Google Chrome
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+# Установка Node.js для Puppeteer
+RUN wget -q -O - https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
-
-# Альтернатива: установка Chromium из репозитория (если Chrome не установится)
-# RUN apt-get update && apt-get install -y chromium chromium-driver && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -45,24 +41,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Установка Playwright и браузеров (если используется Playwright)
-# RUN playwright install chromium
-# RUN playwright install-deps chromium
+# Установка Puppeteer через npm (для pyppeteer требуется Chromium)
+# pyppeteer установит Chromium автоматически при первом запуске
 
 # Копирование исходного кода
 COPY . .
 
 # Создание пользователя для запуска приложения
-# Chrome требует запуска от root или с правильными правами
-# Для безопасности создаем пользователя, но запускаем Chrome с --no-sandbox
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
-
-# Устанавливаем переменные окружения для Chrome
-ENV CHROME_BIN=/usr/bin/google-chrome-stable
-ENV CHROMIUM_BIN=/usr/bin/google-chrome-stable
-
-# Переключаемся на пользователя приложения
 USER appuser
+
+# Устанавливаем PYTHONPATH и переменные для Puppeteer
+ENV PYTHONPATH=/app
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/home/appuser/.local/share/pyppeteer/local-chromium/588429/chrome-linux/chrome
 
 CMD ["python", "-m", "src.main"]
 

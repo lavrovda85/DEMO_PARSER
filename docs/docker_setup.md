@@ -1,71 +1,104 @@
-# Настройка Docker для работы с Chrome
+# Настройка Docker для работы с браузером и ClickHouse
 
 ## Обзор
 
-Docker-образ настроен для работы с Google Chrome, который используется модулем обогащения данных (`enrichment.py`) для извлечения информации с веб-сайтов.
+Docker-образ настроен для работы с:
+- Google Chrome/Chromium для модуля обогащения данных (`extraction/browser.py`)
+- ClickHouse для хранения данных в Data Vault архитектуре
 
 ## Что установлено в Docker
 
-### Google Chrome
+### Google Chrome / Chromium
 
-В Dockerfile установлен Google Chrome Stable из официального репозитория Google:
+В Dockerfile установлены системные зависимости для работы с браузером через pyppeteer:
 
-- **Путь**: `/usr/bin/google-chrome-stable`
-- **Версия**: Последняя стабильная версия из репозитория Google
-- **Автоматическое обновление**: При пересборке образа
+- **Node.js** версия 18.x для поддержки pyppeteer
+- **Системные библиотеки** для работы Chrome в headless режиме:
+  - Библиотеки для рендеринга (libgbm1, libdrm2)
+  - Библиотеки для работы с окнами (libx11, libxcomposite, libxdamage)
+  - Шрифты (fonts-liberation)
+  - И другие зависимости
 
-### Системные зависимости
+**Примечание:** pyppeteer автоматически скачивает Chromium при первом запуске.
 
-Установлены все необходимые библиотеки для работы Chrome в headless режиме:
+### ClickHouse
 
-- Библиотеки для рендеринга (libgbm1, libdrm2)
-- Библиотеки для работы с окнами (libx11, libxcomposite, libxdamage)
-- Шрифты (fonts-liberation)
-- И другие зависимости
+ClickHouse запускается в отдельном контейнере из официального образа:
+- **Образ:** `clickhouse/clickhouse-server:23.8-alpine`
+- **Порт:** 9000 (native protocol) и 8123 (HTTP)
+- **Автоматическая инициализация:** схема Data Vault создается из `docker/init-clickhouse.sql`
 
 ## Конфигурация
 
 ### Dockerfile
 
 ```dockerfile
-# Установка Google Chrome
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+# Установка Node.js для pyppeteer
+RUN wget -q -O - https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка системных зависимостей для Chrome
+RUN apt-get update && apt-get install -y \
+    fonts-liberation \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    # ... другие зависимости
     && rm -rf /var/lib/apt/lists/*
 ```
 
 ### docker-compose.yml
 
-Настроены переменные окружения и параметры для работы Chrome:
+Настроены сервисы:
 
 ```yaml
-environment:
-  CHROME_BIN: /usr/bin/google-chrome-stable
-  CHROMIUM_BIN: /usr/bin/google-chrome-stable
-shm_size: '2gb'  # Увеличенный shared memory для Chrome
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8-alpine
+    environment:
+      CLICKHOUSE_DB: places_db
+      CLICKHOUSE_USER: places_user
+      CLICKHOUSE_PASSWORD: places_password
+    ports:
+      - "9000:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+    environment:
+      BROWSER_HEADLESS: true
 ```
 
-## Автоматическое определение Chrome
+## Автоматическое определение браузера
 
-Модуль `enrichment.py` автоматически находит Chrome в следующих местах (в порядке приоритета):
+Модуль `extraction/browser.py` использует pyppeteer, который автоматически:
+1. Скачивает Chromium при первом запуске
+2. Сохраняет его в `~/.local/share/pyppeteer/`
+3. Использует его для всех последующих запусков
 
-1. Переменные окружения `CHROME_BIN` или `CHROMIUM_BIN`
-2. `/usr/bin/google-chrome-stable` (Google Chrome в Debian/Ubuntu)
-3. `/usr/bin/google-chrome` (альтернативный путь)
-4. `/usr/bin/chromium-browser` (Chromium)
-5. `/usr/bin/chromium` (Chromium альтернативный путь)
+## Параметры запуска браузера в Docker
 
-## Параметры запуска Chrome в Docker
-
-Для стабильной работы Chrome в Docker используются следующие параметры:
+Для стабильной работы браузера в Docker используются следующие параметры (настроены в коде):
 
 - `--no-sandbox` - Отключает sandbox (требуется в Docker)
 - `--disable-setuid-sandbox` - Отключает setuid sandbox
 - `--disable-dev-shm-usage` - Использует /tmp вместо /dev/shm
 - `--disable-gpu` - Отключает GPU в headless режиме
-- `--single-process` - Запуск в одном процессе (опционально)
 
 ## Пересборка образа
 
@@ -81,59 +114,89 @@ docker-compose build --no-cache app
 docker-compose build --no-cache
 ```
 
-## Проверка установки Chrome
+## Проверка установки
 
-Проверьте, что Chrome установлен в контейнере:
+### Проверка ClickHouse
+
+Проверьте, что ClickHouse запущен и доступен:
+
+```bash
+# Проверьте статус контейнера
+docker-compose ps clickhouse
+
+# Проверьте логи
+docker-compose logs clickhouse
+
+# Проверьте подключение
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'
+```
+
+### Проверка браузера
+
+Проверьте, что браузер работает в контейнере:
 
 ```bash
 # Запустите контейнер
-docker-compose up -d
+docker-compose up -d app
 
-# Проверьте версию Chrome
-docker-compose exec app google-chrome-stable --version
+# Проверьте логи на наличие ошибок браузера
+docker-compose logs app | grep -i browser
 
-# Проверьте путь к Chrome
-docker-compose exec app which google-chrome-stable
+# Проверьте, что pyppeteer может запустить браузер
+docker-compose exec app python -c "from pyppeteer import launch; import asyncio; asyncio.run(launch(headless=True, args=['--no-sandbox']))"
 ```
 
-## Альтернатива: Использование Playwright
+## Инициализация ClickHouse схемы
 
-Если вы предпочитаете использовать Playwright вместо pyppeteer:
+Схема Data Vault автоматически создается при первом запуске ClickHouse из файла `docker/init-clickhouse.sql`.
 
-1. Раскомментируйте строки в Dockerfile:
-```dockerfile
-RUN playwright install chromium
-RUN playwright install-deps chromium
+Если схема не создалась автоматически, можно инициализировать вручную:
+
+```bash
+docker-compose exec clickhouse clickhouse-client \
+  --user places_user \
+  --password places_password \
+  --database places_db \
+  < docker/init-clickhouse.sql
 ```
-
-2. Установите Playwright в requirements.txt (уже добавлен)
-
-3. Код автоматически переключится на Playwright при его наличии
 
 ## Решение проблем
 
-### Ошибка: "Chrome не найден"
+### Ошибка: "ClickHouse недоступен"
 
-Убедитесь, что образ пересобран:
+Убедитесь, что ClickHouse контейнер запущен и здоров:
 
 ```bash
-docker-compose build --no-cache app
-docker-compose up -d
+docker-compose ps clickhouse
+docker-compose logs clickhouse
 ```
+
+Проверьте healthcheck:
+```bash
+docker-compose exec clickhouse clickhouse-client \
+  --user places_user \
+  --password places_password \
+  --database places_db \
+  --query 'SELECT 1'
+```
+
+Если healthcheck не проходит, подождите несколько секунд (start_period: 30s) и попробуйте снова.
 
 ### Ошибка: "Failed to move to new namespace"
 
-Увеличьте shared memory в docker-compose.yml:
+Эта ошибка связана с ограничениями Docker на shared memory. Убедитесь, что в `docker-compose.yml` установлен достаточный размер:
 
 ```yaml
-shm_size: '2gb'
+services:
+  app:
+    shm_size: '2gb'
 ```
 
 ### Ошибка: "No usable sandbox"
 
-Параметры `--no-sandbox` и `--disable-setuid-sandbox` уже добавлены в код. Если ошибка сохраняется, проверьте права доступа.
+Параметры `--no-sandbox` и `--disable-setuid-sandbox` уже добавлены в код. Если ошибка сохраняется, проверьте права доступа контейнера.
 
-### Chrome не запускается
+### Браузер не запускается
 
 Проверьте логи контейнера:
 
@@ -141,19 +204,77 @@ shm_size: '2gb'
 docker-compose logs app
 ```
 
-Убедитесь, что все зависимости установлены и Chrome доступен:
+Убедитесь, что:
+1. Node.js установлен: `docker-compose exec app node --version`
+2. pyppeteer может скачать Chromium (требуется интернет-соединение)
+3. Все системные зависимости установлены
 
-```bash
-docker-compose exec app ls -la /usr/bin/google-chrome-stable
-```
+### Ошибка: "Chromium не скачивается"
+
+pyppeteer пытается скачать Chromium при первом запуске. Если это не удается:
+
+1. Проверьте интернет-соединение контейнера
+2. Проверьте логи на наличие ошибок сети
+3. Попробуйте пересобрать образ с очисткой кэша
+
+### Проблемы с производительностью браузера
+
+Если обогащение данных работает медленно:
+
+1. Увеличьте `PIPELINE_MAX_CONCURRENT_ENRICHMENT` для параллельной обработки
+2. Уменьшите `BROWSER_TIMEOUT` для быстрого пропуска недоступных сайтов
+3. Проверьте ресурсы Docker (CPU, память)
+
+### Проблемы с ClickHouse производительностью
+
+Если сохранение данных работает медленно:
+
+1. Увеличьте `PIPELINE_MAX_CONCURRENT_DB_WRITES` (но учтите ограничения ClickHouse драйвера)
+2. Проверьте ресурсы ClickHouse контейнера
+3. Оптимизируйте запросы в `src/database/clickhouse/client.py`
 
 ## Оптимизация размера образа
 
-Текущий образ включает все зависимости для Chrome. Для уменьшения размера можно:
+Текущий образ включает все зависимости для браузера. Для уменьшения размера можно:
 
 1. Использовать multi-stage build
-2. Удалить ненужные пакеты после установки Chrome
+2. Удалить ненужные пакеты после установки
 3. Использовать более легкий базовый образ (но может потребоваться больше зависимостей)
 
 Текущая конфигурация оптимизирована для стабильности и простоты использования.
 
+## Мониторинг
+
+### Логи приложения
+
+```bash
+# Все логи
+docker-compose logs app
+
+# Логи в реальном времени
+docker-compose logs -f app
+
+# Логи только ошибок
+docker-compose logs app | grep -i error
+```
+
+### Логи ClickHouse
+
+```bash
+# Все логи
+docker-compose logs clickhouse
+
+# Логи в реальном времени
+docker-compose logs -f clickhouse
+```
+
+### Использование ресурсов
+
+```bash
+# Статистика контейнеров
+docker stats
+
+# Статистика конкретного контейнера
+docker stats places_api_app
+docker stats places_api_clickhouse
+```

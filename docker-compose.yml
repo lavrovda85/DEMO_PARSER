@@ -1,22 +1,28 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:15-alpine
-    container_name: places_api_postgres
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8-alpine
+    container_name: places_api_clickhouse
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-places_db}
-      POSTGRES_USER: ${POSTGRES_USER:-places_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-places_password}
+      CLICKHOUSE_DB: places_db
+      CLICKHOUSE_USER: places_user
+      CLICKHOUSE_PASSWORD: places_password
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "9000:8123"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/init-clickhouse.sql:/docker-entrypoint-initdb.d/init-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-places_user} -d ${POSTGRES_DB:-places_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+       test: ["CMD-SHELL", "clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'"]
+       interval: 10s
+       timeout: 5s
+       retries: 5
+       start_period: 30s
+    #    timeout: 10s
+    #    retries: 5
+    #    start_period: 30s
 
   app:
     build:
@@ -24,35 +30,76 @@ services:
       dockerfile: Dockerfile
     container_name: places_api_app
     depends_on:
-      postgres:
-        condition: service_healthy
+      - clickhouse
+    env_file:
+      - .env
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: ${POSTGRES_DB:-places_db}
-      POSTGRES_USER: ${POSTGRES_USER:-places_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-places_password}
-      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY}
-      SEARCH_REGION: ${SEARCH_REGION:-Byron Bay, NSW, Australia}
-      SEARCH_POSTAL_CODE: ${SEARCH_POSTAL_CODE:-2481}
-      SEARCH_CATEGORY: ${SEARCH_CATEGORY:-Women's Clothing Store}
-      # Настройки обогащения данных
-      ENRICHMENT_BROWSER_LIBRARY: ${ENRICHMENT_BROWSER_LIBRARY:-auto}
-      ENRICHMENT_HEADLESS: ${ENRICHMENT_HEADLESS:-true}
-      ENRICHMENT_TIMEOUT: ${ENRICHMENT_TIMEOUT:-30000}
-      # Настройки параллелизма pipeline
-      PIPELINE_MAX_CONCURRENT_ENRICHMENT: ${PIPELINE_MAX_CONCURRENT_ENRICHMENT:-5}
-      PIPELINE_MAX_CONCURRENT_DB_WRITES: ${PIPELINE_MAX_CONCURRENT_DB_WRITES:-10}
-      # Переменные для Chrome/Chromium
-      CHROME_BIN: /usr/bin/google-chrome-stable
-      CHROMIUM_BIN: /usr/bin/google-chrome-stable
+      BROWSER_HEADLESS: true
     volumes:
       - ./src:/app/src
       - ./tests:/app/tests
-    # Увеличиваем shared memory для Chrome (требуется для стабильной работы)
-    shm_size: '2gb'
+      - ./notebooks:/app/notebooks
     command: python -m src.main
 
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: places_api_test
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      BROWSER_HEADLESS: true
+    volumes:
+      - ./src:/app/src
+      - ./test_docker.py:/app/test_docker.py
+    command: python test_docker.py
+    profiles:
+      - test
+
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: places_api_jupyter
+    depends_on:
+      - clickhouse
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: clickhouse
+      POSTGRES_PORT: 9000
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:-places_api_token}
+      JUPYTER_PASSWORD: ${JUPYTER_PASSWORD:-}
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./notebooks:/app/notebooks
+      - ./docs:/app/docs
+      - ./requirements.txt:/app/requirements.txt
+      - ./README.md:/app/README.md
+      - ./env.example:/app/env.example
+    command: >
+      sh -c "
+        echo '🚀 Jupyter Lab starting...' &&
+        echo '📊 Available at: http://localhost:'${JUPYTER_PORT:-8888} &&
+        echo '🔑 Token: '${JUPYTER_TOKEN:-places_api_token} &&
+        echo '📁 Working directory: /app' &&
+        jupyter lab
+        --ip=0.0.0.0
+        --port=8888
+        --no-browser
+        --allow-root
+        --notebook-dir=/app
+        --LabApp.token=${JUPYTER_TOKEN:-places_api_token}"
+    profiles:
+      - jupyter
+
 volumes:
-  postgres_data:
+  clickhouse_data:
 

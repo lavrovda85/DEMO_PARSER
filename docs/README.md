@@ -2,51 +2,64 @@
 
 ## Описание
 
-Система автоматизированной выгрузки данных о розничных магазинах через Google Maps Platform (Places API) с сохранением в реляционную базу данных PostgreSQL и обогащением данных через извлечение информации с веб-сайтов магазинов.
+Система автоматизированной выгрузки данных о розничных магазинах через Google Maps Platform (Places API) с сохранением в ClickHouse Data Vault и обогащением данных через динамические JavaScript шаблоны для извлечения информации с веб-сайтов магазинов.
 
 ## Возможности
 
 - Поиск магазинов по категории и региону через Google Places API
-- Извлечение детальной информации о местах (название, адрес, телефон, веб-сайт)
-- Обогащение данных через извлечение описания главной страницы веб-сайта
-- Сохранение данных в нормализованном виде в PostgreSQL
+- Извлечение детальной информации о местах (название, адрес, телефон, веб-сайт, координаты, рейтинг)
+- Обогащение данных через динамические JavaScript шаблоны для извлечения дополнительной информации с веб-сайтов
+- Сохранение данных в нормализованном виде в ClickHouse с использованием Data Vault архитектуры
 - Гибкая настройка параметров поиска через переменные окружения
 - Полная контейнеризация через Docker Compose
+- Jupyter ноутбуки для аналитики и визуализации данных
 
 ## Архитектура
 
 ### Компоненты системы
 
-1. **Google Places API Client** (`src/places_api.py`)
+1. **Google Places API Client** (`src/api/`)
+   - Асинхронный клиент для работы с Google Places API
    - Поиск мест по текстовому запросу
    - Получение детальной информации о местах
    - Нормализация данных для сохранения
 
-2. **Website Enricher** (`src/enrichment.py`)
-   - Извлечение описания главной страницы веб-сайта
-   - Использование Stealth Puppeteer для обхода защиты от ботов
+2. **Data Extraction** (`src/extraction/`)
+   - Динамические JavaScript шаблоны для извлечения данных
+   - Автоматическая загрузка шаблонов из папки `templates/`
+   - Поддержка pyppeteer для браузерной автоматизации
+   - Извлечение описания, контактов, часов работы, адресов, социальных сетей
 
-3. **Database Manager** (`src/database.py`)
-   - Управление подключениями к PostgreSQL
-   - Инициализация схемы базы данных
-   - Управление сессиями
+3. **ClickHouse Data Vault** (`src/database/clickhouse/`)
+   - Клиент для работы с ClickHouse
+   - Data Vault архитектура (Hub-Satellite-Link)
+   - Автоматическое расширение схемы для новых полей
+   - Историчность данных с поддержкой версий
 
-4. **Pipeline Orchestrator** (`src/main.py`)
+4. **Pipeline Orchestrator** (`src/pipeline/`)
    - Координация процесса извлечения и сохранения данных
+   - Асинхронная обработка с параллельным обогащением
    - Обработка ошибок и логирование
 
-### Схема базы данных
+### Схема базы данных (Data Vault)
 
-Таблица `stores`:
-- `id` (String, PK) - Уникальный идентификатор записи
-- `name` (String) - Название магазина
-- `website` (String) - URL веб-сайта
-- `phone` (String) - Номер телефона
-- `address` (Text) - Полный адрес
-- `place_id` (String, UNIQUE) - Уникальный идентификатор Google Places
-- `description` (Text) - Описание магазина (из обогащения)
-- `created_at` (DateTime) - Дата создания записи
-- `updated_at` (DateTime) - Дата последнего обновления
+#### Hub таблицы
+- `hub_stores` - уникальные магазины (по place_id)
+- `hub_fields` - метаданные полей данных
+- `hub_attributes` - метаданные атрибутов
+
+#### Satellite таблицы
+- `sat_store_attributes` - атрибуты магазинов (name, address, phone, website, координаты, рейтинг)
+- `sat_field_values` - значения динамических полей
+- `sat_store_raw` - сырые данные из API
+
+#### Link таблицы
+- `link_store_fields` - связи магазин-поле
+
+#### Представления
+- `vw_store_data` - удобное чтение данных (последняя версия для каждого магазина)
+- `mv_store_search` - материализованное представление для быстрого поиска по place_id
+- `mv_field_stats` - статистика по полям
 
 ## Установка и запуск
 
@@ -60,12 +73,12 @@
 1. Клонируйте репозиторий:
 ```bash
 git clone <repository-url>
-cd TEST_API
+cd DEMO_PARSER
 ```
 
-2. Создайте файл `.env` на основе `.env.example`:
+2. Создайте файл `.env` на основе `env.example`:
 ```bash
-cp .env.example .env
+cp env.example .env
 ```
 
 3. Отредактируйте `.env` и укажите ваш API ключ Google Places:
@@ -79,8 +92,8 @@ docker-compose up
 ```
 
 Система автоматически:
-- Поднимет PostgreSQL
-- Инициализирует схему базы данных
+- Поднимет ClickHouse сервер
+- Инициализирует Data Vault схему
 - Запустит pipeline для извлечения данных
 
 ### Параметры поиска
@@ -111,52 +124,99 @@ docker-compose run app python -m src.main
 
 ### Просмотр данных
 
-Подключение к PostgreSQL:
+Подключение к ClickHouse:
 
 ```bash
-docker-compose exec postgres psql -U places_user -d places_db
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db
 ```
 
 Запросы для просмотра данных:
 
 ```sql
--- Все магазины
-SELECT name, website, phone, address FROM stores;
+-- Все магазины (последняя версия)
+SELECT name, website, phone, address FROM vw_store_data LIMIT 10;
 
--- Магазины с описанием
-SELECT name, description FROM stores WHERE description IS NOT NULL;
+-- Магазины с обогащенными данными
+SELECT name, extracted_fields FROM vw_store_data 
+WHERE extracted_fields != '' LIMIT 10;
 
 -- Статистика
-SELECT COUNT(*) as total_stores, 
-       COUNT(description) as enriched_stores 
-FROM stores;
+SELECT 
+    COUNT(*) as total_stores,
+    COUNTIf(extracted_fields != '') as enriched_stores
+FROM vw_store_data;
+
+-- Поиск по place_id
+SELECT * FROM mv_store_search WHERE place_id = 'ChIJ...' LIMIT 1;
 ```
+
+### Jupyter аналитика
+
+Запустите Jupyter Lab:
+
+```bash
+docker-compose --profile jupyter up jupyter
+```
+
+Откройте браузер по адресу `http://localhost:8888` с токеном из `.env`.
 
 ## Разработка
 
 ### Структура проекта
 
 ```
-TEST_API/
+DEMO_PARSER/
 ├── docker-compose.yml      # Конфигурация Docker Compose
 ├── Dockerfile              # Образ для Python приложения
 ├── requirements.txt        # Python зависимости
-├── .env.example           # Пример конфигурации
+├── env.example            # Пример конфигурации
 ├── src/                   # Исходный код
 │   ├── __init__.py
 │   ├── config.py          # Конфигурация
-│   ├── database.py        # Работа с БД
-│   ├── models.py          # Модели данных
-│   ├── places_api.py      # Google Places API клиент
-│   ├── enrichment.py      # Обогащение данных
-│   └── main.py            # Главный модуль
+│   ├── google_places_parser.py  # Главный парсер
+│   ├── main.py            # Точка входа
+│   ├── api/               # Google Places API клиент
+│   │   ├── client.py
+│   │   ├── normalizer.py
+│   │   ├── factory.py
+│   │   └── search.py
+│   ├── database/          # Работа с БД
+│   │   ├── manager.py
+│   │   ├── queries.py
+│   │   └── clickhouse/    # ClickHouse Data Vault
+│   │       ├── client.py
+│   │       └── schema.py
+│   ├── extraction/        # Извлечение данных
+│   │   ├── browser.py
+│   │   ├── extractor.py
+│   │   ├── templates.py
+│   │   └── templates/     # JavaScript шаблоны
+│   │       ├── 01_description.js
+│   │       ├── 02_contact.js
+│   │       ├── 03_hours.js
+│   │       ├── 04_address.js
+│   │       └── 05_social.js
+│   ├── pipeline/          # ETL компоненты
+│   │   ├── base.py
+│   │   ├── orchestrator.py
+│   │   ├── fetcher.py
+│   │   └── enricher.py
+│   └── storage/           # Сохранение данных
+│       ├── saver.py
+│       └── saver_clickhouse.py
 ├── tests/                 # Тесты
-│   ├── __init__.py
-│   ├── test_places_api.py
+│   ├── test_clickhouse.py
 │   ├── test_enrichment.py
-│   └── test_models.py
+│   ├── test_google_places_parser.py
+│   └── test_pipeline.py
+├── notebooks/             # Jupyter ноутбуки
+│   ├── store_analytics_dashboard.ipynb
+│   └── google_places_parser_demo.ipynb
 └── docs/                  # Документация
-    └── README.md
+    ├── README.md
+    ├── architecture.md
+    ├── configuration.md
+    └── ...
 ```
 
 ### Запуск тестов
@@ -167,47 +227,86 @@ docker-compose run app pytest tests/ -v
 
 ### Логирование
 
-Логи выводятся в консоль с уровнем INFO. Для изменения уровня логирования отредактируйте `src/main.py`.
+Логи выводятся в консоль с уровнем, заданным в `PIPELINE_LOGLEVEL` (по умолчанию INFO). Для изменения уровня логирования отредактируйте `.env`:
+
+```env
+PIPELINE_LOGLEVEL=DEBUG
+```
+
+## Динамические шаблоны извлечения
+
+Система автоматически загружает JavaScript шаблоны из папки `src/extraction/templates/` в порядке нумерации файлов (01_, 02_, etc.).
+
+### Добавление нового шаблона
+
+1. Создайте файл `NN_fieldname.js` в папке `src/extraction/templates/`
+2. Напишите JavaScript код для извлечения данных
+3. Шаблон будет автоматически загружен при следующем запуске
+
+Пример шаблона:
+```javascript
+() => {
+    const description = document.querySelector('meta[name="description"]');
+    return description ? description.content.trim() : null;
+}
+```
 
 ## Ограничения и особенности
 
 1. **Google Places API**
    - Text Search API имеет ограничение на количество страниц результатов (обычно 3)
    - Требуется задержка между запросами для токенов следующей страницы
+   - Настройка через `GOOGLE_PLACES_REQUEST_DELAY` и `GOOGLE_PLACES_INITIAL_DELAY`
 
 2. **Обогащение данных**
-   - Извлечение описания может занимать значительное время
+   - Извлечение данных может занимать значительное время
    - Некоторые сайты могут блокировать автоматизированный доступ
-   - Таймаут загрузки страницы: 30 секунд
+   - Таймаут загрузки страницы настраивается через `BROWSER_TIMEOUT`
+   - Параллелизм настраивается через `PIPELINE_MAX_CONCURRENT_ENRICHMENT`
 
 3. **База данных**
-   - Дубликаты определяются по `place_id`
-   - При повторном запуске существующие записи обновляются
+   - Дубликаты определяются по `place_id` (в hub_stores)
+   - При повторном запуске создаются новые версии в satellite таблицах
+   - Data Vault сохраняет историю изменений
 
 ## Устранение неполадок
 
 ### Ошибка подключения к базе данных
 
-Убедитесь, что PostgreSQL контейнер запущен и здоров:
+Убедитесь, что ClickHouse контейнер запущен и здоров:
+
 ```bash
 docker-compose ps
-docker-compose logs postgres
+docker-compose logs clickhouse
+```
+
+Проверьте healthcheck:
+```bash
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'
 ```
 
 ### Ошибка Google Places API
 
 Проверьте:
-- Корректность API ключа
+- Корректность API ключа в `.env`
 - Наличие квот в Google Cloud Console
 - Включен ли Places API в проекте
 
 ### Ошибки обогащения данных
 
 - Проверьте доступность веб-сайтов
-- Увеличьте таймаут в `src/enrichment.py` при необходимости
+- Увеличьте таймаут в `.env` (`BROWSER_TIMEOUT`)
 - Проверьте логи на наличие блокировок
+- Убедитесь, что браузер запускается (см. [docker_setup.md](docker_setup.md))
+
+### Проблемы с Data Vault схемой
+
+Если схема не инициализировалась автоматически:
+
+```bash
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db < docker/init-clickhouse.sql
+```
 
 ## Лицензия
 
 Проект создан для внутреннего использования.
-

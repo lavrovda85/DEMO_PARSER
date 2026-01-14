@@ -9,14 +9,14 @@
 
 ### 1. Создайте файл `.env`
 
-Скопируйте `.env.example` в `.env` и заполните значения:
+Скопируйте `env.example` в `.env` и заполните значения:
 
 ```bash
 # Windows PowerShell
-Copy-Item .env.example .env
+Copy-Item env.example .env
 
 # Linux/Mac
-cp .env.example .env
+cp env.example .env
 ```
 
 ### 2. Отредактируйте `.env`
@@ -27,6 +27,15 @@ cp .env.example .env
 GOOGLE_PLACES_API_KEY=ваш_api_ключ_здесь
 ```
 
+Также проверьте настройки ClickHouse (используется префикс `POSTGRES_` для совместимости):
+```env
+POSTGRES_HOST=clickhouse
+POSTGRES_PORT=9000
+POSTGRES_DB=places_db
+POSTGRES_USER=places_user
+POSTGRES_PASSWORD=places_password
+```
+
 ### 3. Запустите систему
 
 ```bash
@@ -34,22 +43,28 @@ docker-compose up
 ```
 
 Система автоматически:
-- Поднимет PostgreSQL
-- Инициализирует схему базы данных
+- Поднимет ClickHouse сервер
+- Инициализирует Data Vault схему
 - Запустит pipeline для извлечения данных
 
 ### 4. Просмотр результатов
 
-Подключитесь к базе данных:
+Подключитесь к ClickHouse:
 
 ```bash
-docker-compose exec postgres psql -U places_user -d places_db
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db
 ```
 
 Выполните запрос:
 
 ```sql
-SELECT name, website, phone, address, description FROM stores LIMIT 10;
+SELECT name, website, phone, address FROM vw_store_data LIMIT 10;
+```
+
+Или используйте материализованное представление для поиска:
+
+```sql
+SELECT * FROM mv_store_search WHERE place_id = 'ChIJ...' LIMIT 1;
 ```
 
 ## Изменение параметров поиска
@@ -68,6 +83,16 @@ SEARCH_CATEGORY=Women's Clothing Store
 docker-compose run -e SEARCH_CATEGORY="Men's Clothing Store" app
 ```
 
+## Jupyter аналитика
+
+Для запуска Jupyter Lab с аналитическими ноутбуками:
+
+```bash
+docker-compose --profile jupyter up jupyter
+```
+
+Откройте браузер по адресу `http://localhost:8888` с токеном из `.env` (по умолчанию `places_api_token`).
+
 ## Остановка системы
 
 ```bash
@@ -82,35 +107,35 @@ docker-compose down -v
 
 ## Устранение проблем
 
-### Ошибка подключения к БД
+### Ошибка подключения к ClickHouse
 
-Убедитесь, что PostgreSQL контейнер запущен:
+Убедитесь, что ClickHouse контейнер запущен:
 
 ```bash
 docker-compose ps
-docker-compose logs postgres
+docker-compose logs clickhouse
 ```
 
-### Проблемы с Chrome в Docker
+Проверьте healthcheck:
+```bash
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db --query 'SELECT 1'
+```
 
-Если возникают проблемы с обогащением данных (Chrome не запускается):
+### Проблемы с браузером в Docker
+
+Если возникают проблемы с обогащением данных (браузер не запускается):
 
 1. Пересоберите образ:
 ```bash
 docker-compose build --no-cache app
 ```
 
-2. Проверьте, что Chrome установлен:
-```bash
-docker-compose exec app google-chrome-stable --version
-```
-
-3. Проверьте логи:
+2. Проверьте логи:
 ```bash
 docker-compose logs app
 ```
 
-Подробнее см. [docs/docker_setup.md](docs/docker_setup.md)
+Подробнее см. [docs/docker_setup.md](docs/docker_setup.md) и [docs/enrichment_setup.md](docs/enrichment_setup.md)
 
 ### Ошибка Google Places API
 
@@ -127,3 +152,10 @@ docker-compose logs app
 docker-compose logs app
 ```
 
+### Проблемы с Data Vault схемой
+
+Если схема не инициализировалась автоматически:
+
+```bash
+docker-compose exec clickhouse clickhouse-client --user places_user --password places_password --database places_db < docker/init-clickhouse.sql
+```

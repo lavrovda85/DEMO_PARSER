@@ -31,7 +31,7 @@ class TestStore:
         assert store.address == "123 Test St, Byron Bay"
         assert store.place_id == "test_place_id_123"
         assert store.description == "Test description"
-        assert isinstance(store.created_at, datetime)
+        # created_at и updated_at инициализируются SQLAlchemy при сохранении в БД
     
     def test_store_repr(self):
         """Тест строкового представления Store."""
